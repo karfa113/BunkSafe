@@ -52,7 +52,7 @@ Android · iOS · Web · Windows · macOS · Linux — single codebase.
 Requires Flutter SDK `^3.11.4`.
 
 ```bash
-git clone https://github.com/<your-username>/BunkSafe.git
+git clone https://github.com/karfa113/BunkSafe.git
 cd BunkSafe
 flutter pub get
 flutter run
