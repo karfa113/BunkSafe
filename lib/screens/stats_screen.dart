@@ -112,6 +112,11 @@ class StatsScreen extends StatelessWidget {
               final (p, t) = state.statsForSubject(s);
               final subj = state.findSubject(s);
               final color = subj?.color ?? state.colorForSubject(s);
+              final effThreshold = state.effectiveThreshold(s);
+              final hasCustom = subj?.customThreshold != null;
+              final safeSkip = t == 0 ? 0 : state.safeBunkForSubject(s);
+              final attendMore =
+                  t == 0 ? 0 : state.classesToReachThresholdForSubject(s);
               return Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: _SubjectCard(
@@ -121,7 +126,10 @@ class StatsScreen extends StatelessWidget {
                   percent: pct,
                   present: p,
                   total: t,
-                  threshold: state.threshold,
+                  threshold: effThreshold,
+                  isCustomThreshold: hasCustom,
+                  safeSkip: safeSkip,
+                  attendMore: attendMore,
                   onTap: () => _openSubjectActions(context, state, s),
                 ),
               );
@@ -546,6 +554,9 @@ class _SubjectCard extends StatelessWidget {
   final int present;
   final int total;
   final double threshold;
+  final bool isCustomThreshold;
+  final int safeSkip;
+  final int attendMore;
   final VoidCallback onTap;
   const _SubjectCard({
     required this.subject,
@@ -555,6 +566,9 @@ class _SubjectCard extends StatelessWidget {
     required this.present,
     required this.total,
     required this.threshold,
+    required this.isCustomThreshold,
+    required this.safeSkip,
+    required this.attendMore,
     required this.onTap,
   });
 
@@ -691,23 +705,34 @@ class _SubjectCard extends StatelessWidget {
               Row(
                 children: [
                   _Tag(
-                    icon: Icons.flag_outlined,
-                    text: 'Target ${threshold.toStringAsFixed(0)}%',
-                    color: cs.onSurface.withValues(alpha: 0.55),
+                    icon: isCustomThreshold
+                        ? Icons.flag_rounded
+                        : Icons.flag_outlined,
+                    text: 'Target ${threshold.toStringAsFixed(0)}%'
+                        '${isCustomThreshold ? " (custom)" : ""}',
+                    color: isCustomThreshold
+                        ? accent
+                        : cs.onSurface.withValues(alpha: 0.55),
                   ),
                   const SizedBox(width: 8),
-                  _Tag(
-                    icon: unmarked
-                        ? Icons.hourglass_empty_rounded
-                        : below
-                            ? Icons.warning_amber_rounded
-                            : Icons.check_circle_outline,
-                    text: unmarked
-                        ? 'Not counted yet'
-                        : below
-                            ? 'Below target'
-                            : 'On track',
-                    color: statusColor,
+                  Flexible(
+                    child: _Tag(
+                      icon: unmarked
+                          ? Icons.hourglass_empty_rounded
+                          : below
+                              ? Icons.trending_up_rounded
+                              : Icons.shield_outlined,
+                      text: unmarked
+                          ? 'Not counted yet'
+                          : below
+                              ? (attendMore > 0 && attendMore <= 9999
+                                  ? 'Attend $attendMore more'
+                                  : 'Below target')
+                              : (safeSkip > 0
+                                  ? 'Safe to skip $safeSkip'
+                                  : 'Right at target'),
+                      color: statusColor,
+                    ),
                   ),
                   const Spacer(),
                   Icon(

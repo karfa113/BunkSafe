@@ -100,25 +100,90 @@ class Subject {
   final String name;
   int colorValue;
   String teacher;
+  // Baseline counts entered when a student joins the app mid-semester.
+  // Folded into stats so they don't have to back-fill the calendar day by day.
+  int priorPresent;
+  int priorAbsent;
+  // Per-subject attendance target. Null = use global threshold.
+  int? customThreshold;
 
   Subject({
     required this.name,
     required this.colorValue,
     this.teacher = '',
+    this.priorPresent = 0,
+    this.priorAbsent = 0,
+    this.customThreshold,
   });
 
   Color get color => kSubjectAccent;
+
+  int get priorHeld => priorPresent + priorAbsent;
 
   Map<String, dynamic> toJson() => {
         'name': name,
         'color': colorValue,
         'teacher': teacher,
+        'priorPresent': priorPresent,
+        'priorAbsent': priorAbsent,
+        if (customThreshold != null) 'customThreshold': customThreshold,
       };
 
   factory Subject.fromJson(Map<String, dynamic> j) => Subject(
         name: j['name'] as String,
         colorValue: j['color'] as int,
         teacher: (j['teacher'] as String?) ?? '',
+        priorPresent: (j['priorPresent'] as int?) ?? 0,
+        priorAbsent: (j['priorAbsent'] as int?) ?? 0,
+        customThreshold: j['customThreshold'] as int?,
+      );
+}
+
+/// A range of dates the student should not be marked against (semester
+/// breaks, public holidays, etc.). Held / unmarked counts on these days are
+/// skipped in stats math.
+class Holiday {
+  final String id;
+  DateTime start; // y/m/d only
+  DateTime end;   // y/m/d only, inclusive
+  String label;
+
+  Holiday({
+    required this.id,
+    required this.start,
+    required this.end,
+    this.label = '',
+  });
+
+  bool contains(DateTime date) {
+    final d = DateTime(date.year, date.month, date.day);
+    final s = DateTime(start.year, start.month, start.day);
+    final e = DateTime(end.year, end.month, end.day);
+    return !d.isBefore(s) && !d.isAfter(e);
+  }
+
+  int get days =>
+      DateTime(end.year, end.month, end.day)
+          .difference(DateTime(start.year, start.month, start.day))
+          .inDays +
+      1;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'sy': start.year,
+        'sm': start.month,
+        'sd': start.day,
+        'ey': end.year,
+        'em': end.month,
+        'ed': end.day,
+        'label': label,
+      };
+
+  factory Holiday.fromJson(Map<String, dynamic> j) => Holiday(
+        id: j['id'] as String,
+        start: DateTime(j['sy'] as int, j['sm'] as int, j['sd'] as int),
+        end: DateTime(j['ey'] as int, j['em'] as int, j['ed'] as int),
+        label: (j['label'] as String?) ?? '',
       );
 }
 

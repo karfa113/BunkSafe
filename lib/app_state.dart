@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'models.dart';
 import 'services/notification_service.dart';
+import 'services/widget_sync.dart';
 import 'storage.dart';
 
 class AppState extends ChangeNotifier {
@@ -13,6 +14,8 @@ class AppState extends ChangeNotifier {
   ThemeMode _themeMode = ThemeMode.system;
   List<Subject> _subjects = [];
   List<ExtraClass> _extras = [];
+  List<Holiday> _holidays = [];
+  Set<String> _holidayDateCache = {};
   int _ecaCount = 0;
 
   AppState(this.storage) {
@@ -22,6 +25,8 @@ class AppState extends ChangeNotifier {
     _themeMode = _parseTheme(storage.loadTheme());
     _subjects = storage.loadSubjects();
     _extras = storage.loadExtras();
+    _holidays = storage.loadHolidays();
+    _rebuildHolidayCache();
     _ecaCount = storage.loadEca();
     // One-time migration: pull subjects from existing routine/extras into the
     // saved subjects list, so they survive class deletions.
@@ -44,6 +49,17 @@ class AppState extends ChangeNotifier {
     }
     // Fire-and-forget: arm today's 6 PM reminder based on current state.
     _refreshTodayReminder();
+    // Prime the home-screen widget (if it's on a home screen).
+    WidgetSync.refresh(this);
+  }
+
+  @override
+  void notifyListeners() {
+    super.notifyListeners();
+    // Best-effort: keep the Android home-screen widget in sync after every
+    // state mutation. WidgetSync swallows its own errors and is a no-op on
+    // non-Android platforms.
+    WidgetSync.refresh(this);
   }
 
   void _refreshTodayReminder() {
@@ -64,7 +80,61 @@ class AppState extends ChangeNotifier {
   double get threshold => _threshold;
   ThemeMode get themeMode => _themeMode;
   List<ExtraClass> get extras => List.unmodifiable(_extras);
+  List<Holiday> get holidays {
+    final list = [..._holidays]..sort((a, b) => a.start.compareTo(b.start));
+    return List.unmodifiable(list);
+  }
   int get ecaCount => _ecaCount;
+
+  void _rebuildHolidayCache() {
+    final set = <String>{};
+    for (final h in _holidays) {
+      var d = DateTime(h.start.year, h.start.month, h.start.day);
+      final end = DateTime(h.end.year, h.end.month, h.end.day);
+      while (!d.isAfter(end)) {
+        set.add(DateFormat('yyyy-MM-dd').format(d));
+        d = d.add(const Duration(days: 1));
+      }
+    }
+    _holidayDateCache = set;
+  }
+
+  bool isHolidayDate(DateTime date) {
+    return _holidayDateCache.contains(DateFormat('yyyy-MM-dd').format(date));
+  }
+
+  Holiday? holidayFor(DateTime date) {
+    for (final h in _holidays) {
+      if (h.contains(date)) return h;
+    }
+    return null;
+  }
+
+  Future<void> addHoliday({
+    required DateTime start,
+    required DateTime end,
+    String label = '',
+  }) async {
+    final s = DateTime(start.year, start.month, start.day);
+    final e0 = DateTime(end.year, end.month, end.day);
+    final e = e0.isBefore(s) ? s : e0;
+    _holidays.add(Holiday(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      start: s,
+      end: e,
+      label: label.trim(),
+    ));
+    _rebuildHolidayCache();
+    await storage.saveHolidays(_holidays);
+    notifyListeners();
+  }
+
+  Future<void> deleteHoliday(String id) async {
+    _holidays.removeWhere((h) => h.id == id);
+    _rebuildHolidayCache();
+    await storage.saveHolidays(_holidays);
+    notifyListeners();
+  }
 
   List<Subject> get subjects {
     final list = [..._subjects]..sort(
@@ -227,6 +297,54 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Apply [status] to every routine class for every date in
+  /// `[start, end]` (inclusive). Dates that fall inside a holiday range are
+  /// skipped. Returns `(daysProcessed, classesAffected)` so callers can show
+  /// a useful confirmation.
+  Future<(int, int)> bulkSetForRange(
+    DateTime start,
+    DateTime end,
+    AttendanceStatus status,
+  ) async {
+    var s = DateTime(start.year, start.month, start.day);
+    var e = DateTime(end.year, end.month, end.day);
+    if (e.isBefore(s)) {
+      final t = s;
+      s = e;
+      e = t;
+    }
+    int days = 0;
+    int marks = 0;
+    var d = s;
+    while (!d.isAfter(e)) {
+      if (!isHolidayDate(d)) {
+        final ids = _routine
+            .where((c) => c.weekday == d.weekday)
+            .map((c) => c.id)
+            .toList();
+        if (ids.isNotEmpty) {
+          for (final id in ids) {
+            final k = keyFor(d, id);
+            if (status == AttendanceStatus.none) {
+              _records.remove(k);
+            } else {
+              _records[k] = status;
+            }
+          }
+          days++;
+          marks += ids.length;
+        }
+      }
+      d = d.add(const Duration(days: 1));
+    }
+    if (marks > 0) {
+      await storage.saveAttendance(_records);
+      _refreshTodayReminder();
+      notifyListeners();
+    }
+    return (days, marks);
+  }
+
   // ------- Stats -------
   Map<String, String> _allClassSubjects() {
     final map = <String, String>{};
@@ -248,7 +366,10 @@ class AppState extends ChangeNotifier {
         .map((e) => e.key)
         .toSet();
     for (final entry in _records.entries) {
-      final classId = entry.key.split('|').last;
+      final parts = entry.key.split('|');
+      if (parts.length < 2) continue;
+      if (_holidayDateCache.contains(parts.first)) continue;
+      final classId = parts.last;
       if (!ids.contains(classId)) continue;
       switch (entry.value) {
         case AttendanceStatus.present:
@@ -263,19 +384,32 @@ class AppState extends ChangeNotifier {
           break;
       }
     }
+    final s = findSubject(subject);
+    if (s != null) {
+      p += s.priorPresent;
+      t += s.priorHeld;
+    }
     return (p, t);
   }
 
   (int, int) overallStats() {
     int p = 0;
     int t = 0;
-    for (final v in _records.values) {
+    for (final entry in _records.entries) {
+      final parts = entry.key.split('|');
+      if (parts.isEmpty) continue;
+      if (_holidayDateCache.contains(parts.first)) continue;
+      final v = entry.value;
       if (v == AttendanceStatus.present) {
         p++;
         t++;
       } else if (v == AttendanceStatus.absent) {
         t++;
       }
+    }
+    for (final s in _subjects) {
+      p += s.priorPresent;
+      t += s.priorHeld;
     }
     // Each ECA counts as one attended class, but does not add to classes held.
     // Cap attended at held so the overall percentage can never exceed 100%.
@@ -294,6 +428,54 @@ class AppState extends ChangeNotifier {
     final (p, t) = statsForSubject(subject);
     if (t == 0) return 0;
     return (p / t) * 100;
+  }
+
+  /// Returns the per-subject target threshold (% as 50..100). Falls back to
+  /// the global threshold when the subject has no override or the subject
+  /// isn't known.
+  double effectiveThreshold(String subject) {
+    final s = findSubject(subject);
+    final c = s?.customThreshold;
+    if (c == null) return _threshold;
+    return c.toDouble();
+  }
+
+  /// Per-subject safe-bunk count: how many additional held classes a student
+  /// can miss and still stay at or above the effective threshold.
+  /// Returns -1 if the subject is already below threshold.
+  int safeBunkForSubject(String subject) {
+    final pct = subjectPercent(subject);
+    final target = effectiveThreshold(subject);
+    if (pct < target) return -1;
+    final (p, t) = statsForSubject(subject);
+    int n = 0;
+    int held = t;
+    while (true) {
+      held++;
+      final newPct = (p / held) * 100;
+      if (newPct < target) break;
+      n++;
+      if (n > 999) break;
+    }
+    return n;
+  }
+
+  /// Classes the student must attend in a row to climb the subject back to its
+  /// effective threshold. Returns 0 when already at/above target.
+  int classesToReachThresholdForSubject(String subject) {
+    final pct = subjectPercent(subject);
+    final target = effectiveThreshold(subject);
+    if (pct >= target) return 0;
+    var (p, t) = statsForSubject(subject);
+    int n = 0;
+    while (true) {
+      p++;
+      t++;
+      n++;
+      final newPct = (p / t) * 100;
+      if (newPct >= target) return n;
+      if (n > 9999) return n;
+    }
   }
 
   List<String> uniqueSubjects() {
@@ -323,13 +505,21 @@ class AppState extends ChangeNotifier {
   (int, int) _rawHeldStats() {
     int p = 0;
     int t = 0;
-    for (final v in _records.values) {
+    for (final entry in _records.entries) {
+      final parts = entry.key.split('|');
+      if (parts.isEmpty) continue;
+      if (_holidayDateCache.contains(parts.first)) continue;
+      final v = entry.value;
       if (v == AttendanceStatus.present) {
         p++;
         t++;
       } else if (v == AttendanceStatus.absent) {
         t++;
       }
+    }
+    for (final s in _subjects) {
+      p += s.priorPresent;
+      t += s.priorHeld;
     }
     return (p, t);
   }
@@ -396,6 +586,8 @@ class AppState extends ChangeNotifier {
     _records = {};
     _subjects = [];
     _extras = [];
+    _holidays = [];
+    _holidayDateCache = {};
     _threshold = 75;
     _themeMode = ThemeMode.system;
     _ecaCount = 0;
@@ -409,6 +601,9 @@ class AppState extends ChangeNotifier {
     String name, {
     int? colorValue,
     String teacher = '',
+    int priorPresent = 0,
+    int priorAbsent = 0,
+    int? customThreshold,
   }) async {
     final n = name.trim();
     if (n.isEmpty) return false;
@@ -419,6 +614,9 @@ class AppState extends ChangeNotifier {
       name: n,
       colorValue: colorValue ?? _defaultColorFor(n),
       teacher: teacher.trim(),
+      priorPresent: priorPresent < 0 ? 0 : priorPresent,
+      priorAbsent: priorAbsent < 0 ? 0 : priorAbsent,
+      customThreshold: customThreshold,
     ));
     await storage.saveSubjects(_subjects);
     notifyListeners();
@@ -430,6 +628,10 @@ class AppState extends ChangeNotifier {
     String? newName,
     int? colorValue,
     String? teacher,
+    int? priorPresent,
+    int? priorAbsent,
+    int? customThreshold,
+    bool clearCustomThreshold = false,
   }) async {
     final idx = _subjects
         .indexWhere((s) => s.name.toLowerCase() == oldName.toLowerCase());
@@ -447,6 +649,15 @@ class AppState extends ChangeNotifier {
       name: newNameTrim,
       colorValue: colorValue ?? old.colorValue,
       teacher: (teacher ?? old.teacher).trim(),
+      priorPresent: (priorPresent ?? old.priorPresent) < 0
+          ? 0
+          : (priorPresent ?? old.priorPresent),
+      priorAbsent: (priorAbsent ?? old.priorAbsent) < 0
+          ? 0
+          : (priorAbsent ?? old.priorAbsent),
+      customThreshold: clearCustomThreshold
+          ? null
+          : (customThreshold ?? old.customThreshold),
     );
     _subjects[idx] = replacement;
     // Cascade rename across routine + extras.

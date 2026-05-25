@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../app_state.dart';
 import '../widgets/app_bar_percent.dart';
+import 'holidays_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -192,6 +193,22 @@ class SettingsScreen extends StatelessWidget {
                 ),
                 const Divider(height: 0),
                 ListTile(
+                  leading: const Icon(Icons.beach_access_outlined,
+                      color: Color(0xFFD9A116)),
+                  title: const Text('Holidays'),
+                  subtitle: Text(
+                      state.holidays.isEmpty
+                          ? 'Skip semester breaks from stats.'
+                          : '${state.holidays.length} range${state.holidays.length == 1 ? "" : "s"} configured'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const HolidaysScreen(),
+                    ),
+                  ),
+                ),
+                const Divider(height: 0),
+                ListTile(
                   leading: const Icon(Icons.delete_sweep_outlined,
                       color: Color(0xFFEF476F)),
                   title: const Text('Clear all attendance'),
@@ -217,7 +234,7 @@ class SettingsScreen extends StatelessWidget {
             child: ListTile(
               leading: const Icon(Icons.info_outline),
               title: const Text('BunkSafe'),
-              subtitle: const Text('v1.1.0\nDeveloped by M. Karfa'),
+              subtitle: const Text('v1.3.0\nDeveloped by M. Karfa'),
               isThreeLine: true,
               titleAlignment: ListTileTitleAlignment.center,
             ),
@@ -317,6 +334,26 @@ class SettingsScreen extends StatelessWidget {
       );
       return;
     }
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      const SnackBar(
+        behavior: SnackBarBehavior.floating,
+        duration: Duration(seconds: 4),
+        content: Row(
+          children: [
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            SizedBox(width: 12),
+            Text('Generating attendance report…'),
+          ],
+        ),
+      ),
+    );
 
     final perSubject = <_SubjectReportRow>[];
     for (final s in subjects) {
@@ -565,7 +602,8 @@ class SettingsScreen extends StatelessWidget {
         await Printing.sharePdf(bytes: bytes, filename: fname);
       }
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.clearSnackBars();
+      messenger.showSnackBar(
         SnackBar(content: Text('Generated $fname')),
       );
     } catch (e) {
@@ -575,12 +613,14 @@ class SettingsScreen extends StatelessWidget {
           filename: 'attendance_report.pdf',
         );
         if (!context.mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
+        messenger.clearSnackBars();
+        messenger.showSnackBar(
           const SnackBar(content: Text('Shared attendance report.')),
         );
       } catch (e2) {
         if (!context.mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
+        messenger.clearSnackBars();
+        messenger.showSnackBar(
           SnackBar(content: Text('Could not create report: $e2')),
         );
       }

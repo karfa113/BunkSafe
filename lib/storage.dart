@@ -10,6 +10,7 @@ class StorageService {
   static const _kSubjects = 'subjects_v1';
   static const _kExtras = 'extras_v1';
   static const _kEca = 'eca_v1';
+  static const _kHolidays = 'holidays_v1';
 
   final SharedPreferences prefs;
   StorageService(this.prefs);
@@ -110,6 +111,20 @@ class StorageService {
   Future<void> saveExtras(List<ExtraClass> extras) async {
     final s = jsonEncode(extras.map((e) => e.toJson()).toList());
     await prefs.setString(_kExtras, s);
+  }
+
+  List<Holiday> loadHolidays() {
+    final raw = prefs.getString(_kHolidays);
+    if (raw == null || raw.isEmpty) return [];
+    final list = jsonDecode(raw) as List;
+    return list
+        .map((e) => Holiday.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> saveHolidays(List<Holiday> holidays) async {
+    final s = jsonEncode(holidays.map((h) => h.toJson()).toList());
+    await prefs.setString(_kHolidays, s);
   }
 
   Future<void> clearAll() async {

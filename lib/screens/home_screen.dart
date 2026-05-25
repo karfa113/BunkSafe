@@ -131,6 +131,10 @@ class _FloatingNavBar extends StatelessWidget {
                             const SizedBox(height: 2),
                             Text(
                               it.label,
+                              maxLines: 1,
+                              softWrap: false,
+                              overflow: TextOverflow.fade,
+                              textAlign: TextAlign.center,
                               style: TextStyle(
                                 fontSize: 10.5,
                                 fontWeight: FontWeight.w700,

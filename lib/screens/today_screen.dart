@@ -18,8 +18,16 @@ class TodayScreen extends StatelessWidget {
         ? DateUtils.dateOnly(date!)
         : DateUtils.dateOnly(DateTime.now());
     final isToday = DateUtils.isSameDay(selected, DateTime.now());
-    final classes = state.classesForWeekday(selected.weekday);
-    final extras = state.extrasForDate(selected);
+    final holiday = state.holidayFor(selected);
+    // On a holiday, classes / extras are intentionally hidden so the centred
+    // holiday card stands alone. Short-circuit here so nothing downstream can
+    // accidentally re-introduce them.
+    final classes = holiday != null
+        ? const <ClassItem>[]
+        : state.classesForWeekday(selected.weekday);
+    final extras = holiday != null
+        ? const <ExtraClass>[]
+        : state.extrasForDate(selected);
 
     final hasAny = classes.isNotEmpty || extras.isNotEmpty;
 
@@ -50,112 +58,124 @@ class TodayScreen extends StatelessWidget {
               child: _DayHero(date: selected, isToday: isToday),
             ),
           ),
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
-              child: _SafeBunkBanner(state: state),
-            ),
-          ),
-          if (!hasAny)
-            const SliverFillRemaining(
+          if (holiday != null)
+            SliverFillRemaining(
               hasScrollBody: false,
-              child: _EmptyDay(),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 10, 14, 120),
+                child: Center(
+                  child: _HolidayCenterCard(holiday: holiday),
+                ),
+              ),
             )
           else ...[
-            if (classes.isNotEmpty) ...[
-              SliverToBoxAdapter(
-                child: _SectionHeaderWithActions(
-                  icon: Icons.event_note_rounded,
-                  text: 'Scheduled',
-                  onMarkAll: (s) =>
-                      _bulkMark(context, state, selected, classes, extras, s),
-                ),
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+                child: _SafeBunkBanner(state: state),
               ),
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
-                sliver: SliverList.separated(
-                  itemCount: classes.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 8),
-                  itemBuilder: (_, i) {
-                    final c = classes[i];
-                    final subject = state.findSubject(c.subject);
-                    final color = subject?.color ??
-                        state.colorForSubject(c.subject);
-                    return _swipeable(
-                      context: context,
-                      state: state,
-                      date: selected,
-                      classItem: c,
-                      keyPrefix: 'sched',
-                      child: ClassCard(
-                        item: c,
-                        status: state.statusFor(selected, c.id),
-                        accentColor: color,
-                        teacher: subject?.teacher,
-                        showTime: false,
-                        onSet: (s) => _onSet(context, state, selected, c, s),
-                      ),
-                    );
-                  },
+            ),
+            if (!hasAny)
+              const SliverFillRemaining(
+                hasScrollBody: false,
+                child: _EmptyDay(),
+              )
+            else ...[
+              if (classes.isNotEmpty) ...[
+                SliverToBoxAdapter(
+                  child: _SectionHeaderWithActions(
+                    icon: Icons.event_note_rounded,
+                    text: 'Scheduled',
+                    onMarkAll: (s) =>
+                        _bulkMark(context, state, selected, classes, extras, s),
+                  ),
                 ),
-              ),
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+                  sliver: SliverList.separated(
+                    itemCount: classes.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 8),
+                    itemBuilder: (_, i) {
+                      final c = classes[i];
+                      final subject = state.findSubject(c.subject);
+                      final color = subject?.color ??
+                          state.colorForSubject(c.subject);
+                      return _swipeable(
+                        context: context,
+                        state: state,
+                        date: selected,
+                        classItem: c,
+                        keyPrefix: 'sched',
+                        child: ClassCard(
+                          item: c,
+                          status: state.statusFor(selected, c.id),
+                          accentColor: color,
+                          teacher: subject?.teacher,
+                          showTime: false,
+                          onSet: (s) => _onSet(context, state, selected, c, s),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+              if (extras.isNotEmpty) ...[
+                SliverToBoxAdapter(
+                  child: classes.isEmpty
+                      ? _SectionHeaderWithActions(
+                          icon: Icons.add_alarm_rounded,
+                          text: 'Extra',
+                          onMarkAll: (s) =>
+                              _bulkMark(context, state, selected, classes, extras, s),
+                        )
+                      : const _SectionLabel(
+                          icon: Icons.add_alarm_rounded,
+                          text: 'Extra',
+                        ),
+                ),
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+                  sliver: SliverList.separated(
+                    itemCount: extras.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 8),
+                    itemBuilder: (_, i) {
+                      final e = extras[i];
+                      final subject = state.findSubject(e.subject);
+                      final color = subject?.color ??
+                          state.colorForSubject(e.subject);
+                      final c = ClassItem(
+                        id: e.id,
+                        subject: e.subject,
+                        start: e.start,
+                        end: e.end,
+                        weekday: selected.weekday,
+                        colorValue: e.colorValue,
+                      );
+                      return _swipeable(
+                        context: context,
+                        state: state,
+                        date: selected,
+                        classItem: c,
+                        keyPrefix: 'extra',
+                        child: ClassCard(
+                          item: c,
+                          status: state.statusFor(selected, e.id),
+                          isExtra: true,
+                          accentColor: color,
+                          teacher: subject?.teacher,
+                          showTime: false,
+                          onSet: (s) => _onSet(context, state, selected, c, s),
+                          onLongPress: () =>
+                              _confirmDeleteExtra(context, state, e),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+              const SliverToBoxAdapter(child: _SwipeHint()),
+              const SliverToBoxAdapter(child: SizedBox(height: 100)),
             ],
-            if (extras.isNotEmpty) ...[
-              SliverToBoxAdapter(
-                child: classes.isEmpty
-                    ? _SectionHeaderWithActions(
-                        icon: Icons.add_alarm_rounded,
-                        text: 'Extra',
-                        onMarkAll: (s) =>
-                            _bulkMark(context, state, selected, classes, extras, s),
-                      )
-                    : const _SectionLabel(
-                        icon: Icons.add_alarm_rounded,
-                        text: 'Extra',
-                      ),
-              ),
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
-                sliver: SliverList.separated(
-                  itemCount: extras.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 8),
-                  itemBuilder: (_, i) {
-                    final e = extras[i];
-                    final subject = state.findSubject(e.subject);
-                    final color = subject?.color ??
-                        state.colorForSubject(e.subject);
-                    final c = ClassItem(
-                      id: e.id,
-                      subject: e.subject,
-                      start: e.start,
-                      end: e.end,
-                      weekday: selected.weekday,
-                      colorValue: e.colorValue,
-                    );
-                    return _swipeable(
-                      context: context,
-                      state: state,
-                      date: selected,
-                      classItem: c,
-                      keyPrefix: 'extra',
-                      child: ClassCard(
-                        item: c,
-                        status: state.statusFor(selected, e.id),
-                        isExtra: true,
-                        accentColor: color,
-                        teacher: subject?.teacher,
-                        showTime: false,
-                        onSet: (s) => _onSet(context, state, selected, c, s),
-                        onLongPress: () =>
-                            _confirmDeleteExtra(context, state, e),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ],
-            const SliverToBoxAdapter(child: _SwipeHint()),
-            const SliverToBoxAdapter(child: SizedBox(height: 100)),
           ],
         ],
       ),
@@ -578,6 +598,126 @@ class _DayStyle {
     required this.icon,
     required this.gradient,
   });
+}
+
+class _HolidayCenterCard extends StatelessWidget {
+  final Holiday holiday;
+  const _HolidayCenterCard({required this.holiday});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    const accent = Color(0xFFD9A116);
+    final fmt = DateFormat('d MMM y');
+    final sameDay = holiday.start.year == holiday.end.year &&
+        holiday.start.month == holiday.end.month &&
+        holiday.start.day == holiday.end.day;
+    final rangeText = sameDay
+        ? fmt.format(holiday.start)
+        : '${fmt.format(holiday.start)}  →  ${fmt.format(holiday.end)}';
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(24, 28, 24, 28),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: isDark ? 0.10 : 0.07),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(
+          color: accent.withValues(alpha: 0.45),
+          width: 1.4,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: accent.withValues(alpha: 0.18),
+            blurRadius: 18,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            width: 88,
+            height: 88,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  accent.withValues(alpha: 0.35),
+                  accent.withValues(alpha: 0.18),
+                ],
+              ),
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: accent.withValues(alpha: 0.6),
+                width: 1.6,
+              ),
+            ),
+            child: const Icon(
+              Icons.beach_access_rounded,
+              color: accent,
+              size: 44,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            holiday.label.isEmpty ? 'Holiday' : holiday.label,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontWeight: FontWeight.w800,
+              fontSize: 22,
+              color: accent,
+              letterSpacing: 0.2,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            rangeText,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              fontSize: 13.5,
+              color: cs.onSurface.withValues(alpha: 0.78),
+            ),
+          ),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: accent.withValues(alpha: 0.5),
+              ),
+            ),
+            child: const Text(
+              'No classes today',
+              style: TextStyle(
+                fontWeight: FontWeight.w800,
+                fontSize: 11.5,
+                color: accent,
+                letterSpacing: 0.6,
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            'These days are skipped from your attendance %.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 12,
+              color: cs.onSurface.withValues(alpha: 0.6),
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 class _SwipeToMark extends StatefulWidget {
   const _SwipeToMark({

@@ -24,9 +24,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Calendar'),
-        actions: const [
-          AppBarPercent(),
-          SizedBox(width: 4),
+        actions: [
+          IconButton(
+            tooltip: 'Bulk-mark a date range',
+            icon: const Icon(Icons.library_add_check_outlined),
+            onPressed: () => _bulkMarkRange(context, state),
+          ),
+          const AppBarPercent(),
+          const SizedBox(width: 4),
         ],
       ),
       body: ListView(
@@ -60,6 +65,58 @@ class _CalendarScreenState extends State<CalendarScreen> {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => TodayScreen(date: d)),
     );
+  }
+
+  Future<void> _bulkMarkRange(BuildContext context, AppState state) async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(now.year - 2),
+      lastDate: DateTime(now.year + 2, 12, 31),
+      initialDateRange: DateTimeRange(
+        start: today.subtract(const Duration(days: 6)),
+        end: today,
+      ),
+      helpText: 'Pick a range to bulk-mark',
+      saveText: 'Next',
+    );
+    if (picked == null || !context.mounted) return;
+    final status = await showModalBottomSheet<AttendanceStatus>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _BulkStatusSheet(
+        start: picked.start,
+        end: picked.end,
+      ),
+    );
+    if (status == null || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final (days, marks) =
+        await state.bulkSetForRange(picked.start, picked.end, status);
+    if (!context.mounted) return;
+    messenger.clearSnackBars();
+    if (marks == 0) {
+      messenger.showSnackBar(
+        const SnackBar(
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(milliseconds: 1400),
+          content: Text(
+              'No routine classes in this range (or every day was a holiday).'),
+        ),
+      );
+    } else {
+      final label = status == AttendanceStatus.none
+          ? 'Cleared $marks mark${marks == 1 ? "" : "s"} across $days day${days == 1 ? "" : "s"}'
+          : 'Marked $marks class${marks == 1 ? "" : "es"} as ${status.label} across $days day${days == 1 ? "" : "s"}';
+      messenger.showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(milliseconds: 1700),
+          content: Text(label),
+        ),
+      );
+    }
   }
 
   _MonthStats _monthStats(AppState state, DateTime month) {
@@ -182,6 +239,7 @@ class _DayLegend extends StatelessWidget {
           _LegendDot(color: Color(0xFF06D6A0), label: 'Present'),
           _LegendDot(color: Color(0xFFEF476F), label: 'Absent'),
           _LegendDot(color: Color(0xFFFFD166), label: 'Off'),
+          _LegendDot(color: Color(0xFFD9A116), label: 'Holiday'),
         ],
       ),
     );
@@ -271,10 +329,12 @@ class _MonthGrid extends StatelessWidget {
               final d = DateTime(month.year, month.month, dayNum);
               final isToday = DateUtils.isSameDay(d, DateTime.now());
               final marks = _marksFor(d);
+              final isHoliday = state.isHolidayDate(d);
               return _DayCell(
                 day: dayNum,
                 weekday: d.weekday,
                 isToday: isToday,
+                isHoliday: isHoliday,
                 marks: marks,
                 onTap: () => onPick(d),
               );
@@ -326,6 +386,7 @@ class _DayCell extends StatelessWidget {
   final int day;
   final int weekday;
   final bool isToday;
+  final bool isHoliday;
   final List<AttendanceStatus> marks;
   final VoidCallback onTap;
 
@@ -333,6 +394,7 @@ class _DayCell extends StatelessWidget {
     required this.day,
     required this.weekday,
     required this.isToday,
+    required this.isHoliday,
     required this.marks,
     required this.onTap,
   });
@@ -341,6 +403,7 @@ class _DayCell extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final isWeekend = weekday >= 6;
+    const holidayColor = Color(0xFFFFD166);
 
     final dots = <Color>[];
     for (final s in marks.toSet()) {
@@ -389,6 +452,23 @@ class _DayCell extends StatelessWidget {
           dotColor: cs.onPrimary,
         ),
       );
+    } else if (isHoliday) {
+      cell = Container(
+        decoration: BoxDecoration(
+          color: holidayColor.withValues(alpha: 0.18),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: holidayColor.withValues(alpha: 0.55),
+            width: 1.2,
+          ),
+        ),
+        child: _cellContent(
+          context,
+          textColor: textColor,
+          dots: dots,
+          dotColor: null,
+        ),
+      );
     } else {
       cell = Container(
         decoration: BoxDecoration(
@@ -409,7 +489,24 @@ class _DayCell extends StatelessWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(14),
         onTap: onTap,
-        child: cell,
+        child: Stack(
+          children: [
+            cell,
+            if (isHoliday && !isToday)
+              Positioned(
+                top: 3,
+                right: 4,
+                child: Text(
+                  'H',
+                  style: TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w800,
+                    color: const Color(0xFFD9A116).withValues(alpha: 0.9),
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -621,6 +718,188 @@ class _StatTile extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _BulkStatusSheet extends StatelessWidget {
+  final DateTime start;
+  final DateTime end;
+  const _BulkStatusSheet({required this.start, required this.end});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final fmt = DateFormat('d MMM y');
+    final s0 = DateTime(start.year, start.month, start.day);
+    final e0 = DateTime(end.year, end.month, end.day);
+    final sameDay = s0 == e0;
+    final rangeText = sameDay
+        ? fmt.format(s0)
+        : '${fmt.format(s0)}  →  ${fmt.format(e0)}';
+    final days = e0.difference(s0).inDays + 1;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1A1626) : Colors.white,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 10, 20, 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: Container(
+                  width: 42,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 14),
+                  decoration: BoxDecoration(
+                    color: cs.onSurface.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              Row(
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: kSubjectAccent.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                          color: kSubjectAccent.withValues(alpha: 0.45)),
+                    ),
+                    child: const Icon(Icons.library_add_check_outlined,
+                        color: kSubjectAccent, size: 22),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Mark range',
+                          style: TextStyle(
+                              fontWeight: FontWeight.w800, fontSize: 17),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '$rangeText  •  $days day${days == 1 ? "" : "s"}',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            color: cs.onSurface.withValues(alpha: 0.65),
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Apply to every routine class in the range (holiday days skipped).',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: cs.onSurface.withValues(alpha: 0.65),
+                ),
+              ),
+              const SizedBox(height: 14),
+              _BulkActionTile(
+                icon: Icons.check_rounded,
+                label: 'Mark all Present',
+                color: const Color(0xFF06D6A0),
+                onTap: () =>
+                    Navigator.pop(context, AttendanceStatus.present),
+              ),
+              const SizedBox(height: 8),
+              _BulkActionTile(
+                icon: Icons.close_rounded,
+                label: 'Mark all Absent',
+                color: const Color(0xFFEF476F),
+                onTap: () =>
+                    Navigator.pop(context, AttendanceStatus.absent),
+              ),
+              const SizedBox(height: 8),
+              _BulkActionTile(
+                icon: Icons.beach_access_rounded,
+                label: 'Mark all Off',
+                color: const Color(0xFFFFD166),
+                onTap: () => Navigator.pop(context, AttendanceStatus.off),
+              ),
+              const SizedBox(height: 8),
+              _BulkActionTile(
+                icon: Icons.refresh_rounded,
+                label: 'Clear marks',
+                color: cs.onSurface.withValues(alpha: 0.55),
+                onTap: () => Navigator.pop(context, AttendanceStatus.none),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BulkActionTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+  const _BulkActionTile({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: color.withValues(alpha: 0.10),
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+          child: Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, color: color, size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: color,
+                  ),
+                ),
+              ),
+              Icon(Icons.chevron_right_rounded,
+                  color: color.withValues(alpha: 0.7)),
+            ],
+          ),
+        ),
       ),
     );
   }
